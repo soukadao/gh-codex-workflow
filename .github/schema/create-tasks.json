@@ -31,7 +31,7 @@
 						}
 					}
 				},
-				"required": ["title", "body", "requirement_id", "file_path"],
+				"required": ["title", "body", "requirement_id", "file_path", "dependencies"],
 				"additionalProperties": false
 			}
 		}
