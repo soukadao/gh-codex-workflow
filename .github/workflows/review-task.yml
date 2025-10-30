@@ -1,0 +1,153 @@
+name: Review Task
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  review_task:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:task') && contains(github.event.issue.labels.*.name, 'task-state:in-progress') && startsWith(github.event.comment.body, '/review')
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get task branch info
+        id: get_branch
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+
+            const branchComment = comments.data.find(comment =>
+              comment.body.includes('Task branch created:')
+            );
+
+            if (branchComment) {
+              const taskBranchMatch = branchComment.body.match(/Task branch created:\s*`([^`]+)`/);
+              if (taskBranchMatch) {
+                core.setOutput('task_branch', taskBranchMatch[1]);
+              }
+            }
+
+      - name: Fetch and checkout task branch
+        env:
+          TASK_BRANCH: ${{ steps.get_branch.outputs.task_branch }}
+        run: |
+          if [ -z "$TASK_BRANCH" ]; then
+            echo "Task branch not found"
+            exit 1
+          fi
+
+          git fetch origin "$TASK_BRANCH"
+          git checkout "$TASK_BRANCH"
+
+          PHASE_BRANCH=$(echo "$TASK_BRANCH" | sed 's|/task-.*|/|' | sed 's|phase/|develop/phase-|')
+          git fetch origin "$PHASE_BRANCH"
+
+          echo "task_branch=$TASK_BRANCH" >> $GITHUB_ENV
+          echo "phase_branch=$PHASE_BRANCH" >> $GITHUB_ENV
+
+      - name: Review Code Changes
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            This is task issue #${{ github.event.issue.number }} for ${{ github.repository }}.
+
+            Review the changes in the task branch compared to the phase branch.
+
+            Task specification:
+            ----
+            ${{ github.event.issue.body }}
+            ----
+
+            Review the changes using:
+            git log --oneline ${{ env.phase_branch }}..${{ env.task_branch }}
+            git diff ${{ env.phase_branch }}..${{ env.task_branch }}
+
+            Provide a code review covering:
+            1. **Correctness**: Does the implementation match the task specification?
+            2. **Code Quality**: Are there any code smells, anti-patterns, or best practice violations?
+            3. **Security**: Are there any security vulnerabilities? **CRITICAL: Check for hardcoded credentials, API keys, tokens, passwords, or other sensitive values**
+            4. **Performance**: Are there any performance issues?
+            5. **Testing**: Are appropriate tests included?
+            6. **Documentation**: Is the code properly documented?
+
+            Format your review as:
+            ## Code Review
+
+            ### Summary
+            [Brief overview of changes]
+
+            ### Issues Found
+            - [ ] **[Severity: High/Medium/Low]** Issue description
+            - [ ] **[Severity: High/Medium/Low]** Issue description
+
+            ### Suggestions
+            - Suggestion 1
+            - Suggestion 2
+
+            ### Approval Status
+            ✅ APPROVED - Ready to merge
+            OR
+            ⚠️ CHANGES REQUESTED - Address issues above
+
+      - name: Post review feedback and auto-create PR
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const review = process.env.CODEX_FINAL_MESSAGE;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: review
+            });
+
+            if (review.includes('✅ APPROVED')) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: ['review:approved']
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `/create-pr\n\nAuto-creating PR after review approval`
+              });
+            } else if (review.includes('⚠️ CHANGES REQUESTED')) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: ['review:changes-requested']
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `/auto-fix\n\nAuto-fixing code based on review feedback`
+              });
+            }

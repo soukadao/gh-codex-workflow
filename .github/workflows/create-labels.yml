@@ -30,3 +30,10 @@ jobs:
           gh label create 'task-state:todo' -d 'Task state: To Do' -c '#ce6d85' -R ${{ github.repository }} -f
           gh label create 'task-state:in-progress' -d 'Task state: In Progress' -c '#ce6d85' -R ${{ github.repository }} -f
           gh label create 'task-state:done' -d 'Task state: Done' -c '#ce6d85' -R ${{ github.repository }} -f
+
+      - name: Create Review Labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create 'review:approved' -d 'Code review approved' -c '0E8A16' -R ${{ github.repository }} -f
+          gh label create 'review:changes-requested' -d 'Code review requested changes' -c 'D93F0B' -R ${{ github.repository }} -f

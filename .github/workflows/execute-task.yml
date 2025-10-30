@@ -1,0 +1,217 @@
+name: Execute Task
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  execute_task:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:task') && startsWith(github.event.comment.body, '/execute')
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+
+    steps:
+      - name: Check for blocking dependencies
+        id: check_dependencies
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+
+            const dependencyComments = comments.data.filter(comment =>
+              comment.body.match(/This task depends on #(\d+)/)
+            );
+
+            if (dependencyComments.length === 0) {
+              core.setOutput('can_execute', 'true');
+              return;
+            }
+
+            const dependencyStatuses = await Promise.all(
+              dependencyComments.map(async (comment) => {
+                const match = comment.body.match(/This task depends on #(\d+)/);
+                if (match) {
+                  const depIssueNumber = parseInt(match[1]);
+                  const depIssue = await github.rest.issues.get({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: depIssueNumber
+                  });
+                  return {
+                    number: depIssueNumber,
+                    closed: depIssue.data.state === 'closed'
+                  };
+                }
+                return null;
+              })
+            );
+
+            const openDependencies = dependencyStatuses.filter(dep => dep && !dep.closed);
+
+            if (openDependencies.length > 0) {
+              const depList = openDependencies.map(dep => `#${dep.number}`).join(', ');
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `Cannot execute this task yet. Waiting for dependencies: ${depList}`
+              });
+              core.setFailed(`Blocked by dependencies: ${depList}`);
+              core.setOutput('can_execute', 'false');
+            } else {
+              core.setOutput('can_execute', 'true');
+            }
+
+      - name: Checkout repository
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get task branch info from issue
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        id: get_branch
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issueBody = context.payload.issue.body;
+
+            const branchMatch = issueBody.match(/`(phase-\d+\/[^`]+)`/);
+            if (!branchMatch) {
+              core.setFailed('Could not find branch name in issue body');
+              return;
+            }
+
+            const branchName = branchMatch[1];
+            core.setOutput('branch_name', branchName);
+
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+
+            const branchComment = comments.data.find(comment =>
+              comment.body.includes('Task branch created:')
+            );
+
+            if (branchComment) {
+              const taskBranchMatch = branchComment.body.match(/Task branch created:\s*`([^`]+)`/);
+              if (taskBranchMatch) {
+                core.setOutput('task_branch', taskBranchMatch[1]);
+              }
+            }
+
+      - name: Checkout task branch
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        env:
+          TASK_BRANCH: ${{ steps.get_branch.outputs.task_branch }}
+        run: |
+          if [ -n "$TASK_BRANCH" ] && git ls-remote --heads origin "$TASK_BRANCH" | grep -q "$TASK_BRANCH"; then
+            git fetch origin "$TASK_BRANCH"
+            git checkout "$TASK_BRANCH"
+          else
+            echo "Task branch not found, staying on default branch"
+          fi
+
+      - name: Execute Task
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            You are tasked with implementing code based on the following task specification.
+
+            # Task Specification
+
+            ${{ github.event.issue.body }}
+
+            ---
+
+            # User Instructions
+
+            ${{ github.event.comment.body }}
+
+            ---
+
+            Guidelines:
+            - Implement the code according to the task specification
+            - Follow the file path specified in the task
+            - Write clean, maintainable code with proper error handling
+            - Add comments where necessary for complex logic
+            - Follow best practices for the language/framework being used
+            - If tests are mentioned in the execution plan, include test code
+            - **CRITICAL: Never include sensitive values in code**
+              - Use environment variables for API keys, tokens, passwords, secrets
+              - Use placeholder values like `process.env.API_KEY` or `YOUR_API_KEY_HERE`
+              - Add .env files to .gitignore if they don't exist
+              - Never hardcode credentials, connection strings, or private keys
+            - Return the complete implementation
+
+      - name: Create or update files
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        env:
+          CODEX_OUTPUT: ${{ steps.run_codex.outputs.final-message }}
+          TASK_BRANCH: ${{ steps.get_branch.outputs.task_branch }}
+        run: |
+          echo "$CODEX_OUTPUT" > implementation.md
+
+          if [ -n "$TASK_BRANCH" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .
+            git commit -m "Implement task from issue #${{ github.event.issue.number }}" || echo "No changes to commit"
+            git push origin "$TASK_BRANCH"
+          fi
+
+      - name: Comment on issue
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        uses: actions/github-script@v7
+        env:
+          CODEX_OUTPUT: ${{ steps.run_codex.outputs.final-message }}
+          TASK_BRANCH: ${{ steps.get_branch.outputs.task_branch }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const output = process.env.CODEX_OUTPUT;
+            const branch = process.env.TASK_BRANCH;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `## Task Execution Result\n\nBranch: \`${branch}\`\n\n${output}`
+            });
+
+      - name: Update task status
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        run: |
+          gh issue edit "$NUMBER" --remove-label "task-state:todo" --add-label "task-state:in-progress"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+
+      - name: Auto-trigger review
+        if: steps.check_dependencies.outputs.can_execute == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `/review\n\nAuto-reviewing implemented code`
+            });

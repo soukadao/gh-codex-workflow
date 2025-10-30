@@ -1,0 +1,41 @@
+{
+	"type": "object",
+	"properties": {
+		"tasks": {
+			"type": "array",
+			"description": "task documents",
+			"items": {
+				"type": "object",
+				"properties": {
+					"title": {
+						"type": "string",
+						"description": "Task title"
+					},
+					"body": {
+						"type": "string",
+						"description": "Task body (markdown format)"
+					},
+					"requirement_id": {
+						"type": "string",
+						"description": "Requirement ID (e.g., R001, R002)"
+					},
+					"file_path": {
+						"type": "string",
+						"description": "File path for this task"
+					},
+					"dependencies": {
+						"type": "array",
+						"description": "Array of task indices that this task depends on (0-based)",
+						"items": {
+							"type": "number"
+						}
+					}
+				},
+				"required": ["title", "body", "requirement_id", "file_path"],
+				"additionalProperties": false
+			}
+		}
+	},
+	"required": ["tasks"],
+	"additionalProperties": false
+}

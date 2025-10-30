@@ -1,0 +1,137 @@
+name: Auto-Fix Task
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  auto_fix:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:task') && contains(github.event.issue.labels.*.name, 'review:changes-requested') && startsWith(github.event.comment.body, '/auto-fix')
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get task branch info
+        id: get_branch
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+
+            const branchComment = comments.data.find(comment =>
+              comment.body.includes('Task branch created:')
+            );
+
+            if (branchComment) {
+              const taskBranchMatch = branchComment.body.match(/Task branch created:\s*`([^`]+)`/);
+              if (taskBranchMatch) {
+                core.setOutput('task_branch', taskBranchMatch[1]);
+              }
+            }
+
+            const reviewComment = comments.data.reverse().find(comment =>
+              comment.body.includes('## Code Review') || comment.body.includes('Code Review')
+            );
+
+            if (reviewComment) {
+              core.setOutput('review_feedback', reviewComment.body);
+            }
+
+      - name: Checkout task branch
+        env:
+          TASK_BRANCH: ${{ steps.get_branch.outputs.task_branch }}
+        run: |
+          if [ -n "$TASK_BRANCH" ] && git ls-remote --heads origin "$TASK_BRANCH" | grep -q "$TASK_BRANCH"; then
+            git fetch origin "$TASK_BRANCH"
+            git checkout "$TASK_BRANCH"
+          else
+            echo "Task branch not found"
+            exit 1
+          fi
+
+      - name: Fix code based on review
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            Fix the code based on the review feedback below.
+
+            # Task Specification
+
+            ${{ github.event.issue.body }}
+
+            ---
+
+            # Review Feedback
+
+            ${{ steps.get_branch.outputs.review_feedback }}
+
+            ---
+
+            Guidelines:
+            - Address ALL issues mentioned in the review
+            - Fix high and medium priority issues
+            - Apply suggested improvements
+            - Maintain code quality and best practices
+            - Ensure tests pass if applicable
+            - **CRITICAL: Never include sensitive values in code**
+              - Use environment variables for API keys, tokens, passwords, secrets
+              - Use placeholder values like `process.env.API_KEY` or `YOUR_API_KEY_HERE`
+              - Add .env files to .gitignore if they don't exist
+              - Never hardcode credentials, connection strings, or private keys
+            - Return the complete fixed implementation
+
+      - name: Apply fixes
+        env:
+          CODEX_OUTPUT: ${{ steps.run_codex.outputs.final-message }}
+          TASK_BRANCH: ${{ steps.get_branch.outputs.task_branch }}
+        run: |
+          echo "$CODEX_OUTPUT" > implementation.md
+
+          if [ -n "$TASK_BRANCH" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .
+            git commit -m "Auto-fix: Address review feedback for issue #${{ github.event.issue.number }}" || echo "No changes to commit"
+            git push origin "$TASK_BRANCH"
+          fi
+
+      - name: Remove changes-requested label and auto-review
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              name: 'review:changes-requested'
+            }).catch(() => {});
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Fixes applied based on review feedback.`
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `/review\n\nRe-reviewing after auto-fix`
+            });

@@ -1,0 +1,154 @@
+name: Create Task Branch
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  create_task_branch:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:task')
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get phase number from issue body
+        id: get_phase
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issueBody = context.payload.issue.body;
+
+            const specMatch = issueBody.match(/Spec(?:ification)?\s+Document:\s*#(\d+)/i);
+
+            if (!specMatch) {
+              core.setFailed('Could not find Spec Document reference in issue body');
+              return;
+            }
+
+            const specIssueNumber = specMatch[1];
+
+            const specIssue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: specIssueNumber
+            });
+
+            const reqMatch = specIssue.data.body.match(/Requirements\s+Document:\s*#(\d+)/i);
+
+            if (!reqMatch) {
+              core.setFailed('Could not find Requirements Document reference in spec issue');
+              return;
+            }
+
+            const requirementsIssueNumber = reqMatch[1];
+
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: requirementsIssueNumber
+            });
+
+            const phaseComment = comments.data.find(comment =>
+              comment.body.includes('Phase branch created:') &&
+              comment.body.includes('Phase Number:')
+            );
+
+            if (!phaseComment) {
+              core.setFailed('Could not find phase number in requirements issue comments');
+              return;
+            }
+
+            const phaseMatch = phaseComment.body.match(/Phase Number:\s*\*\*(\d+)\*\*/);
+
+            if (!phaseMatch) {
+              core.setFailed('Could not extract phase number from comment');
+              return;
+            }
+
+            const phaseNumber = phaseMatch[1];
+            core.setOutput('phase_number', phaseNumber);
+            console.log(`Found phase number: ${phaseNumber}`);
+
+      - name: Get next task number for phase
+        id: task_number
+        env:
+          PHASE_NUMBER: ${{ steps.get_phase.outputs.phase_number }}
+        run: |
+          # Get all branches matching phase/{PHASE_NUMBER}/task-*
+          BRANCHES=$(git branch -r | grep -E "origin/phase/${PHASE_NUMBER}/task-[0-9]+$" || echo "")
+
+          if [ -z "$BRANCHES" ]; then
+            # No task branches exist for this phase, start with 1
+            NEXT_TASK=1
+          else
+            # Extract task numbers and find the maximum
+            MAX_TASK=$(echo "$BRANCHES" | sed "s|origin/phase/${PHASE_NUMBER}/task-||" | sort -n | tail -1)
+            NEXT_TASK=$((MAX_TASK + 1))
+          fi
+
+          echo "task_number=$NEXT_TASK" >> $GITHUB_OUTPUT
+          echo "Next task number for phase ${PHASE_NUMBER}: $NEXT_TASK"
+
+      - name: Create task branch
+        env:
+          PHASE_NUMBER: ${{ steps.get_phase.outputs.phase_number }}
+          TASK_NUMBER: ${{ steps.task_number.outputs.task_number }}
+        run: |
+          PHASE_BRANCH="develop/phase-${PHASE_NUMBER}"
+          TASK_BRANCH="phase/${PHASE_NUMBER}/task-${TASK_NUMBER}"
+
+          # Check if phase branch exists
+          if ! git show-ref --verify --quiet "refs/remotes/origin/${PHASE_BRANCH}"; then
+            echo "Error: Phase branch ${PHASE_BRANCH} does not exist"
+            exit 1
+          fi
+
+          # Create and push the new task branch
+          git checkout -b "$TASK_BRANCH" "origin/${PHASE_BRANCH}"
+          git push origin "$TASK_BRANCH"
+
+          echo "Created branch: $TASK_BRANCH from $PHASE_BRANCH"
+
+      - name: Comment on issue and check dependencies
+        uses: actions/github-script@v7
+        env:
+          PHASE_NUMBER: ${{ steps.get_phase.outputs.phase_number }}
+          TASK_NUMBER: ${{ steps.task_number.outputs.task_number }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const phaseNumber = process.env.PHASE_NUMBER;
+            const taskNumber = process.env.TASK_NUMBER;
+            const branchName = `phase/${phaseNumber}/task-${taskNumber}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Task branch created: \`${branchName}\`\n\nPhase: **${phaseNumber}** | Task: **${taskNumber}**`
+            });
+
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+
+            const hasDependencies = comments.data.some(comment =>
+              comment.body.match(/This task depends on #(\d+)/)
+            );
+
+            if (!hasDependencies) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `/execute\n\nAuto-executing task (no dependencies)`
+              });
+            }

@@ -1,0 +1,237 @@
+name: Create Tasks
+on:
+  issues:
+    types: [closed]
+
+jobs:
+  create_tasks:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:spec') && contains(github.event.issue.labels.*.name, 'doc-state:draft')
+    permissions:
+      contents: read
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get phase number from issue
+        id: get_phase
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issueBody = context.payload.issue.body;
+
+            const reqMatch = issueBody.match(/Requirements\s+Document:\s*#(\d+)/i);
+
+            if (!reqMatch) {
+              core.setFailed('Could not find Requirements Document reference in issue body');
+              return;
+            }
+
+            const requirementsIssueNumber = reqMatch[1];
+
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: requirementsIssueNumber
+            });
+
+            const phaseComment = comments.data.find(comment =>
+              comment.body.includes('Phase branch created:') &&
+              comment.body.includes('Phase Number:')
+            );
+
+            if (!phaseComment) {
+              core.setFailed('Could not find phase number in requirements issue comments');
+              return;
+            }
+
+            const phaseMatch = phaseComment.body.match(/Phase Number:\s*\*\*(\d+)\*\*/);
+
+            if (!phaseMatch) {
+              core.setFailed('Could not extract phase number from comment');
+              return;
+            }
+
+            const phaseNumber = phaseMatch[1];
+            const phasePadded = phaseNumber.toString().padStart(5, '0');
+            core.setOutput('phase_number', phaseNumber);
+            core.setOutput('phase_padded', phasePadded);
+            core.setOutput('requirements_issue', requirementsIssueNumber);
+            console.log(`Found phase number: ${phaseNumber} (padded: ${phasePadded})`);
+
+      - name: Create Task Documents
+        id: run_codex
+        env:
+          PHASE_NUMBER: ${{ steps.get_phase.outputs.phase_number }}
+          PHASE_PADDED: ${{ steps.get_phase.outputs.phase_padded }}
+          REQUIREMENTS_ISSUE: ${{ steps.get_phase.outputs.requirements_issue }}
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          output-schema-file: ./.github/schema/create-tasks.json
+          prompt: |
+            Based on the following specification document, create detailed task definitions.
+
+            # Specification Document
+
+            ${{ github.event.issue.body }}
+
+            ---
+
+            **IMPORTANT: Language Detection**
+            - First, detect the language of the specification document above
+            - Generate ALL task documents in the SAME language as the specification (including all headers, labels, status indicators, and text)
+            - Use the appropriate translations for all fields based on the detected language
+
+            Please create task documents with the following structure for each task.
+
+            The template below shows field names and their format. Replace the field names with appropriate translations for the detected language:
+
+            # [Task Name - in the same language as spec]
+
+            - Branch: `phase-${{ steps.get_phase.outputs.phase_padded }}/[dir-name]`
+            - Requirements Document: `/phase-${{ steps.get_phase.outputs.phase_padded }}/requirements.md`
+            - Specification Document: `/phase-${{ steps.get_phase.outputs.phase_padded }}/spec.md`
+            - Requirement ID: `[REQUIREMENT_ID]`
+            - File Path: `[FILE_PATH]`
+            - File Name: `[FILE_NAME]`
+            - Task Dependencies: `[TASK_DEPENDENCIES]`
+
+            Status: TODO
+
+            Last Updated: ${{ github.event.issue.updated_at }}
+
+            ## Execution Plan
+
+            - [ ] [To-Be item 1]
+            - [ ] [To-Be item 2]
+            - [ ] [To-Be item 3]
+            - [ ] [To-Be item 4]
+            - [ ] [To-Be item 5]
+
+            Guidelines:
+            - **IMPORTANT: Break down the specification into granular, actionable tasks following the 1 task = 1 file principle**
+            - **Each task should modify or create exactly ONE file** (e.g., one task for auth.ts, another task for user.ts)
+            - If a feature requires multiple files, create multiple tasks (one per file)
+            - Identify dependencies between tasks (if Task B requires Task A to be completed first, Task B depends on Task A)
+            - For each task, specify:
+              - title: Brief task name describing what will be done to ONE specific file
+              - body: Complete task document in the format above
+              - requirement_id: The requirement ID from the specification (e.g., R001, R002)
+              - file_path: The SINGLE file path that this task will modify/create (e.g., "src/auth.ts", "src/models/user.ts")
+              - dependencies: Array of task indices (0-based) that must be completed before this task
+            - The dir-name should be in format: `001-feature-name`, `002-another-feature`, etc.
+            - Order tasks logically based on dependencies
+            - Dependencies should reference the index position in the tasks array (0 for first task, 1 for second, etc.)
+
+            Example of good task breakdown:
+            - Task 0: Implement authentication logic → file_path: "src/auth.ts"
+            - Task 1: Implement user model → file_path: "src/models/user.ts", dependencies: [0]
+            - Task 2: Implement authentication middleware → file_path: "src/middleware/auth.ts", dependencies: [0]
+            - Task 3: Add authentication tests → file_path: "src/auth.test.ts", dependencies: [0]
+
+  create_issue:
+    runs-on: ubuntu-latest
+    needs: create_tasks
+    permissions:
+      issues: write
+    outputs:
+      issue_numbers: ${{ steps.create_issues.outputs.issue_numbers }}
+      issue_ids: ${{ steps.create_issues.outputs.issue_ids }}
+    steps:
+      - name: Create Task Issues
+        id: create_issues
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.create_tasks.outputs.final_message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const json = JSON.parse(process.env.CODEX_FINAL_MESSAGE);
+            const issueNumbers = [];
+            const issueIds = [];
+
+            for (const task of json.tasks) {
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: task.title,
+                body: task.body,
+                labels: ['doc-type:task', 'task-state:todo']
+              });
+              issueNumbers.push(issue.data.number);
+              issueIds.push(issue.data.id);
+              console.log(`Created issue #${issue.data.number} with ID ${issue.data.id}`);
+            }
+
+            core.setOutput('issue_numbers', JSON.stringify(issueNumbers));
+            core.setOutput('issue_ids', JSON.stringify(issueIds));
+
+  add_dependencies:
+    runs-on: ubuntu-latest
+    needs: [create_tasks, create_issue]
+    permissions:
+      issues: write
+    steps:
+      - name: Add Task Dependencies
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.create_tasks.outputs.final_message }}
+          ISSUE_NUMBERS: ${{ needs.create_issue.outputs.issue_numbers }}
+          ISSUE_IDS: ${{ needs.create_issue.outputs.issue_ids }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const json = JSON.parse(process.env.CODEX_FINAL_MESSAGE);
+            const issueNumbers = JSON.parse(process.env.ISSUE_NUMBERS);
+            const issueIds = JSON.parse(process.env.ISSUE_IDS);
+
+            for (let i = 0; i < json.tasks.length; i++) {
+              const task = json.tasks[i];
+
+              if (task.dependencies && task.dependencies.length > 0) {
+                for (const depIndex of task.dependencies) {
+                  if (depIndex >= 0 && depIndex < issueIds.length) {
+                    try {
+                      await github.rest.issues.addBlockedByDependency({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issueNumbers[i],
+                        issue_id: issueIds[depIndex]
+                      });
+
+                      console.log(`Issue #${issueNumbers[i]} is blocked by #${issueNumbers[depIndex]}`);
+
+                      await github.rest.issues.createComment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issueNumbers[i],
+                        body: `This task depends on #${issueNumbers[depIndex]} to be completed first.`
+                      });
+                    } catch (error) {
+                      console.error(`Failed to add dependency: ${error.message}`);
+                    }
+                  }
+                }
+              }
+            }
+
+  label_management:
+    runs-on: ubuntu-latest
+    needs: add_dependencies
+    permissions:
+      issues: write
+    steps:
+      - run: gh issue edit "$NUMBER" --add-label "$ADD_LABEL" --remove-label "$REMOVE_LABEL"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          ADD_LABEL: doc-state:completed
+          REMOVE_LABEL: doc-state:draft

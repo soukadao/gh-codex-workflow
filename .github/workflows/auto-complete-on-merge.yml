@@ -1,0 +1,34 @@
+name: Auto-Complete on PR Merge
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  auto_complete:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'doc-type:task')
+    permissions:
+      issues: write
+    steps:
+      - name: Find and complete task issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+            const closesMatch = prBody.match(/Closes\s+#(\d+)/i);
+
+            if (!closesMatch) {
+              console.log('No "Closes #N" found in PR body');
+              return;
+            }
+
+            const taskIssueNumber = parseInt(closesMatch[1]);
+            console.log(`Found task issue: #${taskIssueNumber}`);
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: taskIssueNumber,
+              body: `/complete\n\nAuto-completing after PR merge`
+            });

@@ -1,0 +1,138 @@
+name: Complete Task
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  complete_task:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:task') && startsWith(github.event.comment.body, '/complete')
+    permissions:
+      issues: write
+    steps:
+      - name: Mark task as done and trigger dependent tasks
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const currentIssueNumber = context.payload.issue.number;
+            const currentIssueId = context.payload.issue.id;
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: currentIssueNumber,
+              state: 'closed'
+            });
+
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: currentIssueNumber,
+              name: 'task-state:in-progress'
+            }).catch(() => {});
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: currentIssueNumber,
+              labels: ['task-state:done']
+            });
+
+            const allIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'doc-type:task',
+              per_page: 100
+            });
+
+            const taskIssues = allIssues.filter(issue =>
+              issue.labels.some(label => label.name === 'doc-type:task')
+            );
+
+            for (const issue of taskIssues) {
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number
+              });
+
+              const dependencyComment = comments.data.find(comment =>
+                comment.body.includes(`This task depends on #${currentIssueNumber}`)
+              );
+
+              if (dependencyComment) {
+                try {
+                  await github.rest.issues.removeDependencyBlockedBy({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    issue_id: currentIssueId
+                  });
+
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    body: `Dependency #${currentIssueNumber} has been completed. Checking if this task can now be executed...`
+                  });
+
+                  const allComments = await github.rest.issues.listComments({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number
+                  });
+
+                  const remainingDeps = allComments.data.filter(c =>
+                    c.body.match(/This task depends on #(\d+)/) &&
+                    !c.body.includes(`#${currentIssueNumber}`)
+                  );
+
+                  const closedDepsCount = await Promise.all(
+                    remainingDeps.map(async (depComment) => {
+                      const depMatch = depComment.body.match(/This task depends on #(\d+)/);
+                      if (depMatch) {
+                        const depIssueNumber = parseInt(depMatch[1]);
+                        const depIssue = await github.rest.issues.get({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: depIssueNumber
+                        });
+                        return depIssue.data.state === 'closed';
+                      }
+                      return false;
+                    })
+                  );
+
+                  const allDepsClosed = closedDepsCount.every(isClosed => isClosed);
+
+                  if (remainingDeps.length === 0 || allDepsClosed) {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issue.number,
+                      body: `All dependencies completed! This task is now ready to execute.\n\n/execute`
+                    });
+
+                    console.log(`Auto-executing task #${issue.number}`);
+                  } else {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issue.number,
+                      body: `Dependency #${currentIssueNumber} completed, but waiting for ${remainingDeps.length} more dependencies.`
+                    });
+                  }
+                } catch (error) {
+                  console.error(`Failed to process dependency for issue #${issue.number}: ${error.message}`);
+                }
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: currentIssueNumber,
+              body: `Task completed! Dependent tasks have been notified.`
+            });

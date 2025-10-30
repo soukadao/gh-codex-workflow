@@ -1,0 +1,71 @@
+name: Create Phase Branch
+on:
+  issues:
+    types: [closed]
+
+jobs:
+  create_phase_branch:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:requirements') && contains(github.event.issue.labels.*.name, 'doc-state:draft')
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get next phase number
+        id: phase_number
+        run: |
+          # Get all branches matching develop/phase-*
+          BRANCHES=$(git branch -r | grep -E 'origin/develop/phase-[0-9]+$' || echo "")
+
+          if [ -z "$BRANCHES" ]; then
+            # No phase branches exist, start with 1
+            NEXT_PHASE=1
+          else
+            # Extract phase numbers and find the maximum
+            MAX_PHASE=$(echo "$BRANCHES" | sed 's|origin/develop/phase-||' | sort -n | tail -1)
+            NEXT_PHASE=$((MAX_PHASE + 1))
+          fi
+
+          echo "phase_number=$NEXT_PHASE" >> $GITHUB_OUTPUT
+          echo "Next phase number: $NEXT_PHASE"
+
+      - name: Create phase branch
+        env:
+          PHASE_NUMBER: ${{ steps.phase_number.outputs.phase_number }}
+        run: |
+          BRANCH_NAME="develop/phase-${PHASE_NUMBER}"
+
+          # Check if main branch exists, otherwise use the default branch
+          if git show-ref --verify --quiet refs/remotes/origin/main; then
+            BASE_BRANCH="origin/main"
+          else
+            BASE_BRANCH="origin/$(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)"
+          fi
+
+          # Create and push the new branch
+          git checkout -b "$BRANCH_NAME" "$BASE_BRANCH"
+          git push origin "$BRANCH_NAME"
+
+          echo "Created branch: $BRANCH_NAME from $BASE_BRANCH"
+
+      - name: Comment on issue
+        uses: actions/github-script@v7
+        env:
+          PHASE_NUMBER: ${{ steps.phase_number.outputs.phase_number }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const phaseNumber = process.env.PHASE_NUMBER;
+            const branchName = `develop/phase-${phaseNumber}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Phase branch created: \`${branchName}\`\n\nPhase Number: **${phaseNumber}**`
+            });

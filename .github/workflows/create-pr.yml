@@ -1,0 +1,108 @@
+name: Create Pull Request
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  create_pr:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'doc-type:task') && contains(github.event.issue.labels.*.name, 'review:approved') && startsWith(github.event.comment.body, '/create-pr')
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get task and phase branch info
+        id: get_branches
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+
+            const branchComment = comments.data.find(comment =>
+              comment.body.includes('Task branch created:')
+            );
+
+            if (!branchComment) {
+              core.setFailed('Could not find task branch in comments');
+              return;
+            }
+
+            const taskBranchMatch = branchComment.body.match(/Task branch created:\s*`([^`]+)`/);
+            if (!taskBranchMatch) {
+              core.setFailed('Could not parse task branch name');
+              return;
+            }
+
+            const taskBranch = taskBranchMatch[1];
+            const phaseMatch = taskBranch.match(/phase\/(\d+)\/task-\d+/);
+
+            if (!phaseMatch) {
+              core.setFailed('Could not extract phase number from task branch');
+              return;
+            }
+
+            const phaseNumber = phaseMatch[1];
+            const phaseBranch = `develop/phase-${phaseNumber}`;
+
+            core.setOutput('task_branch', taskBranch);
+            core.setOutput('phase_branch', phaseBranch);
+            core.setOutput('phase_number', phaseNumber);
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_BRANCH: ${{ steps.get_branches.outputs.task_branch }}
+          PHASE_BRANCH: ${{ steps.get_branches.outputs.phase_branch }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          git fetch origin "$TASK_BRANCH"
+          git fetch origin "$PHASE_BRANCH"
+
+          PR_TITLE="[Task #${ISSUE_NUMBER}] $(gh issue view ${ISSUE_NUMBER} --json title -q .title)"
+
+          TASK_DESC=$(gh issue view ${ISSUE_NUMBER} --json body -q .body | head -20)
+          CHANGES=$(git log --oneline ${PHASE_BRANCH}..origin/${TASK_BRANCH})
+
+          PR_URL=$(gh pr create \
+            --title "$PR_TITLE" \
+            --body "## Task Reference
+          Closes #${ISSUE_NUMBER}
+
+          ## Task Description
+          ${TASK_DESC}
+
+          ## Changes
+          ${CHANGES}" \
+            --base "$PHASE_BRANCH" \
+            --head "$TASK_BRANCH" \
+            --label "doc-type:task" \
+            --label "phase-${{ steps.get_branches.outputs.phase_number }}")
+
+          echo "pr_url=$PR_URL" >> $GITHUB_ENV
+
+      - name: Comment PR link on issue
+        uses: actions/github-script@v7
+        env:
+          PR_URL: ${{ env.pr_url }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const prUrl = process.env.PR_URL;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Pull request created: ${prUrl}\n\nReady for final review and merge.`
+            });
