@@ -24,50 +24,18 @@ jobs:
           script: |
             const issueBody = context.payload.issue.body;
 
-            const specMatch = issueBody.match(/Spec(?:ification)?\s+Document:\s*#(\d+)/i);
+            const frontmatterMatch = issueBody.match(/^---\s*\n([\s\S]*?)\n---/);
 
-            if (!specMatch) {
-              core.setFailed('Could not find Spec Document reference in issue body');
+            if (!frontmatterMatch) {
+              core.setFailed('Could not find frontmatter in issue body');
               return;
             }
 
-            const specIssueNumber = specMatch[1];
-
-            const specIssue = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: specIssueNumber
-            });
-
-            const reqMatch = specIssue.data.body.match(/Requirements\s+Document:\s*#(\d+)/i);
-
-            if (!reqMatch) {
-              core.setFailed('Could not find Requirements Document reference in spec issue');
-              return;
-            }
-
-            const requirementsIssueNumber = reqMatch[1];
-
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: requirementsIssueNumber
-            });
-
-            const phaseComment = comments.data.find(comment =>
-              comment.body.includes('Phase branch created:') &&
-              comment.body.includes('Phase Number:')
-            );
-
-            if (!phaseComment) {
-              core.setFailed('Could not find phase number in requirements issue comments');
-              return;
-            }
-
-            const phaseMatch = phaseComment.body.match(/Phase Number:\s*\*\*(\d+)\*\*/);
+            const frontmatter = frontmatterMatch[1];
+            const phaseMatch = frontmatter.match(/phase:\s*(\d+)/);
 
             if (!phaseMatch) {
-              core.setFailed('Could not extract phase number from comment');
+              core.setFailed('Could not extract phase number from frontmatter');
               return;
             }
 

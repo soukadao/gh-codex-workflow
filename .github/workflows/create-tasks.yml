@@ -93,6 +93,13 @@ jobs:
 
             The template below shows field names and their format. Replace the field names with appropriate translations for the detected language:
 
+            ---
+            phase: ${{ steps.get_phase.outputs.phase_number }}
+            requirement_id: [REQUIREMENT_ID]
+            file_path: [FILE_PATH]
+            dependencies: [TASK_DEPENDENCIES_ARRAY]
+            ---
+
             # [Task Name - in the same language as spec]
 
             - Branch: `phase-${{ steps.get_phase.outputs.phase_padded }}/[dir-name]`
