@@ -1,26 +1,31 @@
 {
-	"type": "object",
-	"properties": {
-		"documents": {
-			"type": "array",
-			"description": "spec documents",
-			"items": {
-				"type": "object",
-				"properties": {
-					"title": {
-						"type": "string",
-						"description": "Document(Issue) Title"
-					},
-					"body": {
-						"type": "string",
-						"description": "Document(Issue) Body"
-					}
-				},
-				"required": ["title", "body"],
-				"additionalProperties": false
-			}
-		}
-	},
-	"required": ["documents"],
-	"additionalProperties": false
+  "type": "object",
+  "properties": {
+    "documents": {
+      "type": "array",
+      "description": "spec documents",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Document(Issue) Title"
+          },
+          "body": {
+            "type": "string",
+            "description": "Document(Issue) Body"
+          }
+        },
+        "required": [
+          "title",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "documents"
+  ],
+  "additionalProperties": false
 }
