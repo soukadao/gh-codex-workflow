@@ -19,7 +19,7 @@ jobs:
 
       - name: Get task and phase branch info
         id: get_branches
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ github.token }}
           script: |
@@ -92,7 +92,7 @@ jobs:
           echo "pr_url=$PR_URL" >> $GITHUB_ENV
 
       - name: Comment PR link on issue
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           PR_URL: ${{ env.pr_url }}
         with:

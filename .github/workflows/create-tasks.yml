@@ -20,7 +20,7 @@ jobs:
 
       - name: Get phase number from issue
         id: get_phase
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ github.token }}
           script: |
@@ -147,7 +147,7 @@ jobs:
     steps:
       - name: Create Task Issues
         id: create_issues
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           CODEX_FINAL_MESSAGE: ${{ needs.create_tasks.outputs.final_message }}
         with:
@@ -180,7 +180,7 @@ jobs:
       issues: write
     steps:
       - name: Add Task Dependencies
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           CODEX_FINAL_MESSAGE: ${{ needs.create_tasks.outputs.final_message }}
           ISSUE_NUMBERS: ${{ needs.create_issue.outputs.issue_numbers }}
@@ -199,16 +199,15 @@ jobs:
                 for (const depIndex of task.dependencies) {
                   if (depIndex >= 0 && depIndex < issueIds.length) {
                     try {
-                      await github.rest.issues.addBlockedByDependency({
+                      await octokit.rest.issues.addBlockedByDependency({
                         owner: context.repo.owner,
                         repo: context.repo.repo,
                         issue_number: issueNumbers[i],
                         issue_id: issueIds[depIndex]
                       });
-
                       console.log(`Issue #${issueNumbers[i]} is blocked by #${issueNumbers[depIndex]}`);
 
-                      await github.rest.issues.createComment({
+                      await octokit.rest.issues.createComment({
                         owner: context.repo.owner,
                         repo: context.repo.repo,
                         issue_number: issueNumbers[i],
