@@ -86,14 +86,19 @@ jobs:
           script: |
             const issueBody = context.payload.issue.body;
 
-            const branchMatch = issueBody.match(/`(phase-\d+\/[^`]+)`/);
-            if (!branchMatch) {
-              core.setFailed('Could not find branch name in issue body');
+            const frontmatterMatch = issueBody.match(/^---\s*\n([\s\S]*?)\n---/);
+
+            if (!frontmatterMatch) {
+              core.setFailed('Could not find frontmatter in issue body');
               return;
             }
 
-            const branchName = branchMatch[1];
-            core.setOutput('branch_name', branchName);
+            const frontmatter = frontmatterMatch[1];
+            const filePathMatch = frontmatter.match(/file_path:\s*(.+)/);
+
+            if (filePathMatch) {
+              core.setOutput('file_path', filePathMatch[1].trim());
+            }
 
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,

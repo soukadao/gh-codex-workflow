@@ -54,18 +54,9 @@ jobs:
           echo "Created branch: $BRANCH_NAME from $BASE_BRANCH"
 
       - name: Comment on issue
-        uses: actions/github-script@v8
         env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
           PHASE_NUMBER: ${{ steps.phase_number.outputs.phase_number }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const phaseNumber = process.env.PHASE_NUMBER;
-            const branchName = `develop/phase-${phaseNumber}`;
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              body: `Phase branch created: \`${branchName}\`\n\nPhase Number: **${phaseNumber}**`
-            });
+          REPO: ${{ github.repository }}
+        run: gh issue comment $ISSUE_NUMBER --body "$PHASE_NUMBER" --repo "$REPO"
