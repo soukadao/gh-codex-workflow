@@ -1,31 +1,18 @@
 {
   "type": "object",
   "properties": {
-    "documents": {
-      "type": "array",
-      "description": "spec documents",
-      "items": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string",
-            "description": "Document(Issue) Title"
-          },
-          "body": {
-            "type": "string",
-            "description": "Document(Issue) Body"
-          }
-        },
-        "required": [
-          "title",
-          "body"
-        ],
-        "additionalProperties": false
-      }
+    "title": {
+      "type": "string",
+      "description": "Spec Document(Issue) Title"
+    },
+    "body": {
+      "type": "string",
+      "description": "Spec Document(Issue) Body"
     }
   },
   "required": [
-    "documents"
+    "title",
+    "body"
   ],
   "additionalProperties": false
 }
